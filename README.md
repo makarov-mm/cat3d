@@ -1,4 +1,4 @@
-# CSharpCube / OBJ Viewer Demo
+# OBJ Viewer Demo
 
 This is a small demonstration project written in **C# (WinForms)** using **pure OpenGL (via Win32 interop, no external libraries)**.
 The goal of the project is to explore low-level graphics programming in .NET and implement a minimal but realistic rendering pipeline.
