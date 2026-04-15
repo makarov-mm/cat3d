@@ -317,9 +317,9 @@ public sealed class MainForm : Form
 
     private void InitScene()
     {
-        _mesh = ObjLoader.Load("..\\..\\..\\..\\objects\\12221_Cat_v1_l3.obj");
-        _catDiffuse = Texture.LoadTextureFromFile("..\\..\\..\\..\\objects\\Cat_diffuse.jpg");
-        _catBump = Texture.LoadTextureFromFile("..\\..\\..\\..\\objects\\Cat_bump.jpg");
+        _mesh = ObjLoader.Load(Files.Model);
+        _catDiffuse = Texture.LoadTextureFromFile(Files.TextureDiffuse);
+        _catBump = Texture.LoadTextureFromFile(Files.TextureBump);
 
         _program = CreateProgram();
 
@@ -369,92 +369,8 @@ public sealed class MainForm : Form
 
     private uint CreateProgram()
     {
-        const string vs = """
-#version 460 core
-
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec2 aUV;
-layout(location = 2) in vec3 aNormal;
-layout(location = 3) in vec3 aTangent;
-
-uniform mat4 uModel;
-uniform mat4 uView;
-uniform mat4 uProj;
-
-out vec2 vUV;
-out vec3 vWorldPos;
-out mat3 vTBN;
-
-void main()
-{
-    vec3 worldPos = vec3(uModel * vec4(aPos, 1.0));
-
-    mat3 normalMatrix = mat3(transpose(inverse(uModel)));
-
-    vec3 N = normalize(normalMatrix * aNormal);
-    vec3 T = normalize(normalMatrix * aTangent);
-    T = normalize(T - dot(T, N) * N);
-    vec3 B = cross(N, T);
-
-    vUV = aUV;
-    vWorldPos = worldPos;
-    vTBN = mat3(T, B, N);
-
-    gl_Position = uProj * uView * vec4(worldPos, 1.0);
-}
-""";
-
-        const string fs = """
-#version 460 core
-
-in vec2 vUV;
-in vec3 vWorldPos;
-in mat3 vTBN;
-
-out vec4 FragColor;
-
-uniform sampler2D uDiffuse;
-uniform sampler2D uNormalMap;
-uniform vec3 uLightDir;
-uniform vec3 uViewPos;
-uniform int uInvertNormalY;
-
-void main()
-{
-    vec3 albedo = texture(uDiffuse, vUV).rgb;
-
-    vec3 normalTS = texture(uNormalMap, vUV).rgb * 2.0 - 1.0;
-    if (uInvertNormalY != 0)
-        normalTS.y = -normalTS.y;
-
-    normalTS = normalize(normalTS);
-
-    vec3 N = normalize(vTBN * vec3(0,0,1));
-    vec3 L = normalize(-uLightDir);
-    vec3 V = normalize(uViewPos - vWorldPos);
-    vec3 H = normalize(L + V);
-
-    float ambientStrength = 0.18;
-    vec3 ambient = albedo * ambientStrength;
-
-    float diff = max(dot(N, L), 0.0);
-    vec3 diffuse = albedo * diff;
-
-    float specPower = 24.0;
-    float specStrength = 0.15;
-    
-    //float specPower = 64.0;
-    //float specStrength = 0.35;
-    
-    float spec = pow(max(dot(N, H), 0.0), specPower);
-    vec3 specular = vec3(spec * specStrength);
-
-    vec3 color = ambient + diffuse + specular;
-
-    //color = pow(color, vec3(1.0 / 2.2));
-    FragColor = vec4(color, 1.0);
-}
-""";
+        string vs = File.ReadAllText(Files.ShaderVertex);
+        string fs = File.ReadAllText(Files.ShaderFragment);
 
         uint vert = CompileShader(GL.GL_VERTEX_SHADER, vs);
         uint frag = CompileShader(GL.GL_FRAGMENT_SHADER, fs);
@@ -468,6 +384,7 @@ void main()
         GL.DeleteShader(frag);
 
         GL.GetProgramiv(program, GL.GL_LINK_STATUS, out int ok);
+        
         if (ok == 0)
             throw new Exception("Program link failed:\n" + GL.GetProgramInfoLog(program));
 
