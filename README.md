@@ -42,3 +42,9 @@ It is a **learning / exploration project**, focused on:
 1. Open the solution in Visual Studio 2026
 2. Build and run (x64 recommended)
 3. Make sure your system supports OpenGL
+
+## Support
+
+If you found this project interesting or useful, you can support my work:
+
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/makarov-mm?style=flat&logo=github)](https://github.com/sponsors/makarov-mm)
