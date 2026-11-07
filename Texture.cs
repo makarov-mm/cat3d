@@ -2,74 +2,61 @@
 
 namespace Cat3d;
 
-public static class Texture
+// A repeating, mipmapped 2D texture.
+internal sealed class Texture : IDisposable
 {
-    public static unsafe uint LoadTextureFromFile(string path)
+    private Texture(Bitmap image, int internalFormat)
     {
-        using Bitmap original = new Bitmap(path);
-        using Bitmap bmp = new Bitmap(original.Width, original.Height, PixelFormat.Format32bppArgb);
+        Handle = GL.GenTexture();
+        GL.BindTexture(GL.GL_TEXTURE_2D, Handle);
 
-        using (Graphics g = Graphics.FromImage(bmp))
-        {
-            g.DrawImage(original, 0, 0, original.Width, original.Height);
-        }
-
-        Rectangle rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
-        BitmapData data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        // GDI+ hands out the pixels as BGRA, top row first (the OBJ loader flips v to match).
+        BitmapData pixels = image.LockBits(new Rectangle(Point.Empty, image.Size), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
 
         try
         {
-            byte[] rgba = new byte[bmp.Width * bmp.Height * 4];
-            byte* srcBase = (byte*)data.Scan0;
-            int dstIndex = 0;
-
-            for (int y = 0; y < bmp.Height; y++)
-            {
-                byte* srcRow = srcBase + y * data.Stride;
-                for (int x = 0; x < bmp.Width; x++)
-                {
-                    byte b = srcRow[x * 4 + 0];
-                    byte g = srcRow[x * 4 + 1];
-                    byte r = srcRow[x * 4 + 2];
-                    byte a = srcRow[x * 4 + 3];
-
-                    rgba[dstIndex + 0] = r;
-                    rgba[dstIndex + 1] = g;
-                    rgba[dstIndex + 2] = b;
-                    rgba[dstIndex + 3] = a;
-                    dstIndex += 4;
-                }
-            }
-
-            GL.GenTextures(1, out uint tex);
-            GL.BindTexture(GL.GL_TEXTURE_2D, tex);
-            GL.TexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT);
-            GL.TexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_REPEAT);
-            GL.TexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR_MIPMAP_LINEAR);
-            GL.TexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR);
-
-            fixed (byte* p = rgba)
-            {
-                GL.TexImage2D(
-                    GL.GL_TEXTURE_2D,
-                    0,
-                    GL.GL_RGBA8,
-                    bmp.Width,
-                    bmp.Height,
-                    0,
-                    GL.GL_RGBA,
-                    GL.GL_UNSIGNED_BYTE,
-                    (IntPtr)p);
-            }
-
-            GL.GenerateMipmap(GL.GL_TEXTURE_2D);
-            GL.BindTexture(GL.GL_TEXTURE_2D, 0);
-
-            return tex;
+            GL.TexImage2D(GL.GL_TEXTURE_2D, 0, internalFormat, pixels.Width, pixels.Height, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, pixels.Scan0);
         }
         finally
         {
-            bmp.UnlockBits(data);
+            image.UnlockBits(pixels);
         }
+
+        GL.GenerateMipmap(GL.GL_TEXTURE_2D);
+        GL.TexParameter(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT);
+        GL.TexParameter(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_REPEAT);
+        GL.TexParameter(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR_MIPMAP_LINEAR);
+        GL.TexParameter(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR);
+        GL.BindTexture(GL.GL_TEXTURE_2D, 0);
     }
+
+    public uint Handle { get; }
+
+    // An image file in color, or as a grayscale one only its red channel (a height map, say).
+    public static Texture Load(string path, bool grayscale = false)
+    {
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException($"Could not find file '{path}'.", path);
+        }
+
+        using var image = new Bitmap(path);
+        return new Texture(image, grayscale ? GL.GL_R8 : GL.GL_RGBA8);
+    }
+
+    // A single texel of one color.
+    public static Texture Solid(Color color)
+    {
+        using var image = new Bitmap(1, 1);
+        image.SetPixel(0, 0, color);
+        return new Texture(image, GL.GL_RGBA8);
+    }
+
+    public void Bind(int unit)
+    {
+        GL.ActiveTexture(GL.GL_TEXTURE0 + (uint)unit);
+        GL.BindTexture(GL.GL_TEXTURE_2D, Handle);
+    }
+
+    public void Dispose() => GL.DeleteTexture(Handle);
 }

@@ -1,11 +1,13 @@
 ﻿using System.Numerics;
+using System.Runtime.InteropServices;
 
 namespace Cat3d;
 
-public struct ObjVertex(Vector3 position, Vector2 texCoord, Vector3 normal)
+// A mesh vertex, laid out as the vertex buffer holds it.
+[StructLayout(LayoutKind.Sequential)]
+internal readonly struct ObjVertex(Vector3 position, Vector3 normal, Vector2 texCoord)
 {
-    public Vector3 Position = position;
-    public Vector2 TexCoord = texCoord;
-    public Vector3 Normal = normal;
-    public Vector3 Tangent;
+    public readonly Vector3 Position = position;
+    public readonly Vector3 Normal = normal;
+    public readonly Vector2 TexCoord = texCoord;
 }

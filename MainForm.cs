@@ -1,541 +1,147 @@
-﻿using System.ComponentModel;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using Timer = System.Windows.Forms.Timer;
+﻿using System.Diagnostics;
 
 namespace Cat3d;
 
-public sealed class MainForm : Form
+internal sealed class MainForm : Form
 {
-    private readonly Timer _timer;
+    private const string Title = "WinForms + OpenGL Core + Bump Mapping";
+    private const float SpinRadiansPerSecond = 0.8f;
+    private const float DragRadiansPerPixel = 0.01f;   // at 96 dpi
+    private const float ZoomPerWheelNotch = 0.9f;
 
-    private IntPtr _hdc;
-    private IntPtr _hglrc;
-    private bool _glInitialized;
+    private static readonly string ModelPath = Path.Combine(AppContext.BaseDirectory, "objects", "12221_Cat_v1_l3.obj");
 
-    private bool _mouseDown;
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private TimeSpan _lastFrame;
+    private Turntable _turntable = Turntable.Default;
+    private bool _dragging;
     private Point _lastMouse;
 
-    private float _rotX = -3.14f / 2;
-    private float _rotY = 0.0f;
-    private float _autoRotY = 0.0f;
-    private float _zoom = 70f;
-
-    private long _lastTicks;
-
-    private uint _vao;
-    private uint _vbo;
-    private uint _program;
-
-    private ObjMesh _mesh;
-    private uint _catDiffuse;
-    private uint _catBump;
-
-    private int _uModel = -1;
-    private int _uView = -1;
-    private int _uProj = -1;
-    private int _uDiffuse = -1;
-    private int _uNormalMap = -1;
-    private int _uLightDir = -1;
-    private int _uViewPos = -1;
-    private int _uInvertNormalY = -1;
-
-    private const bool InvertNormalMapGreenChannel = false;
+    private GLContext? _gl;
+    private ModelRenderer? _renderer;
 
     public MainForm()
     {
-        Text = "WinForms + OpenGL Core + Normal Mapping";
-        ClientSize = new Size(800, 800);
+        Text = Title;
+        ClientSize = LogicalToDeviceUnits(new Size(800, 800));
         StartPosition = FormStartPosition.CenterScreen;
-        KeyPreview = true;
-
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.Opaque, true);
-
-        _timer = new Timer { Interval = 16 };
-        _timer.Tick += (_, _) => RenderFrame();
+        // OpenGL paints the whole client area, and again while the window is resized.
+        SetStyle(ControlStyles.Opaque | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
     }
 
     protected override CreateParams CreateParams
     {
         get
         {
-            var cp = base.CreateParams;
-            cp.ClassStyle |= Native.CS_OWNDC;
+            const int CS_OWNDC = 0x0020;   // OpenGL keeps using the window's device context
+            CreateParams cp = base.CreateParams;
+            cp.ClassStyle |= CS_OWNDC;
             return cp;
         }
     }
 
-    protected override void OnShown(EventArgs e)
+    protected override void OnLoad(EventArgs e)
     {
-        base.OnShown(e);
-
+        base.OnLoad(e);
         try
         {
-            InitOpenGL();
-            InitScene();
-            _glInitialized = true;
-            _lastTicks = Stopwatch.GetTimestamp();
-            _timer.Start();
+            ObjMesh mesh = ObjLoader.Load(ModelPath);
+            _gl = new GLContext(Handle);
+            _renderer = new ModelRenderer(mesh);
         }
-        catch (Exception ex)
+        catch (Exception error)
         {
-            MessageBox.Show(this, ex.ToString(), "Initialization error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            Close();
+            _gl?.Dispose();
+            _gl = null;
+            MessageBox.Show(this, error.Message, Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            BeginInvoke(Close);
+            return;
         }
+
+        Text = $"{Title}   |   OpenGL {_gl.Version}";
+        _lastFrame = _clock.Elapsed;
+        Application.Idle += OnIdle;
     }
 
-    protected override void OnFormClosing(FormClosingEventArgs e)
+    protected override void OnFormClosed(FormClosedEventArgs e)
     {
-        _timer.Stop();
-        DestroyScene();
-
-        if (_hglrc != IntPtr.Zero)
-        {
-            Native.wglMakeCurrent(IntPtr.Zero, IntPtr.Zero);
-            Native.wglDeleteContext(_hglrc);
-            _hglrc = IntPtr.Zero;
-        }
-
-        if (_hdc != IntPtr.Zero)
-        {
-            Native.ReleaseDC(Handle, _hdc);
-            _hdc = IntPtr.Zero;
-        }
-
-        base.OnFormClosing(e);
+        Application.Idle -= OnIdle;
+        _renderer?.Dispose();   // its OpenGL objects go while the context is still current
+        _renderer = null;
+        _gl?.Dispose();
+        _gl = null;
+        base.OnFormClosed(e);
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    // Renders frame after frame while there are no messages to handle; vsync paces it.
+    private void OnIdle(object? sender, EventArgs e)
     {
-        if (_glInitialized)
+        while (WindowState != FormWindowState.Minimized && !Native.HasPendingMessages())
             RenderFrame();
-        else
-            e.Graphics.Clear(Color.Black);
     }
 
-    protected override void OnKeyDown(KeyEventArgs e)
-    {
-        if (e.KeyCode == Keys.Escape)
-            Close();
+    protected override void OnPaint(PaintEventArgs e) => RenderFrame();
 
-        base.OnKeyDown(e);
+    private void RenderFrame()
+    {
+        if (_gl is null || _renderer is null || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            return;
+
+        TimeSpan now = _clock.Elapsed;
+        if (!_dragging)   // the model holds still under the mouse
+            _turntable = _turntable.Rotate((float)(now - _lastFrame).TotalSeconds * SpinRadiansPerSecond, 0);
+        _lastFrame = now;
+
+        _renderer.Render(ClientSize.Width, ClientSize.Height, _turntable, (float)now.TotalSeconds);
+        _gl.SwapBuffers();
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
         if (e.Button == MouseButtons.Left)
         {
-            _mouseDown = true;
+            _dragging = true;
             _lastMouse = e.Location;
             Capture = true;
         }
-
         base.OnMouseDown(e);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         if (e.Button == MouseButtons.Left)
-        {
-            _mouseDown = false;
-            Capture = false;
-        }
-
+            Capture = false;   // OnMouseCaptureChanged ends the drag
         base.OnMouseUp(e);
+    }
+
+    // Also when another window takes the mouse away in the middle of a drag.
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        _dragging = false;
+        base.OnMouseCaptureChanged(e);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        if (_mouseDown)
+        if (_dragging)
         {
-            int dx = e.X - _lastMouse.X;
-            int dy = e.Y - _lastMouse.Y;
-
-            _rotY += dx * 0.01f;
-            _rotX += dy * 0.01f;
-            _rotX = Math.Clamp(_rotX, -1.5f, 1.5f);
-
+            float radiansPerPixel = DragRadiansPerPixel * 96f / DeviceDpi;
+            _turntable = _turntable.Rotate((e.X - _lastMouse.X) * radiansPerPixel, (e.Y - _lastMouse.Y) * radiansPerPixel);
             _lastMouse = e.Location;
         }
-
         base.OnMouseMove(e);
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
-        _zoom -= Math.Sign(e.Delta) * 0.35f;
-        _zoom = Math.Clamp(_zoom, 60f, 120f);
-
+        _turntable = _turntable.Zoom(MathF.Pow(ZoomPerWheelNotch, e.Delta / (float)SystemInformation.MouseWheelScrollDelta));
         base.OnMouseWheel(e);
     }
 
-    private void InitOpenGL()
+    protected override void OnKeyDown(KeyEventArgs e)
     {
-        _hdc = Native.GetDC(Handle);
-        if (_hdc == IntPtr.Zero)
-            throw new Win32Exception("GetDC failed.");
-
-        SetBasicPixelFormat(_hdc);
-        InitWGLExtensions();
-
-        _hglrc = CreateModernContext(_hdc);
-        if (_hglrc == IntPtr.Zero)
-            throw new Exception("Failed to create modern OpenGL context.");
-
-        if (!Native.wglMakeCurrent(_hdc, _hglrc))
-            throw new Win32Exception("wglMakeCurrent failed.");
-
-        GL.LoadAll();
+        if (e.KeyCode == Keys.Escape)
+            Close();
+        base.OnKeyDown(e);
     }
-
-    private void InitWGLExtensions()
-    {
-        string cls = "Dummy_WGL_Window";
-
-        var wc = new Native.WNDCLASS
-        {
-            style = Native.CS_OWNDC,
-            lpfnWndProc = Marshal.GetFunctionPointerForDelegate(Native.DefWindowProcDelegate),
-            hInstance = Native.GetModuleHandle(null),
-            lpszClassName = cls
-        };
-
-        ushort atom = Native.RegisterClass(ref wc);
-        if (atom == 0)
-        {
-            int err = Marshal.GetLastWin32Error();
-            if (err != 1410) // ERROR_CLASS_ALREADY_EXISTS
-                throw new Win32Exception(err);
-        }
-
-        IntPtr hwnd = Native.CreateWindowEx(
-            0,
-            cls,
-            "dummy",
-            Native.WS_OVERLAPPEDWINDOW,
-            0, 0, 1, 1,
-            IntPtr.Zero,
-            IntPtr.Zero,
-            wc.hInstance,
-            IntPtr.Zero);
-
-        if (hwnd == IntPtr.Zero)
-            throw new Win32Exception("CreateWindowEx dummy failed.");
-
-        IntPtr hdc = Native.GetDC(hwnd);
-        if (hdc == IntPtr.Zero)
-        {
-            Native.DestroyWindow(hwnd);
-            throw new Win32Exception("GetDC dummy failed.");
-        }
-
-        try
-        {
-            SetBasicPixelFormat(hdc);
-
-            IntPtr rc = Native.wglCreateContext(hdc);
-            if (rc == IntPtr.Zero)
-                throw new Win32Exception("wglCreateContext dummy failed.");
-
-            try
-            {
-                if (!Native.wglMakeCurrent(hdc, rc))
-                    throw new Win32Exception("wglMakeCurrent dummy failed.");
-
-                WGL.LoadExtensions();
-            }
-            finally
-            {
-                Native.wglMakeCurrent(IntPtr.Zero, IntPtr.Zero);
-                Native.wglDeleteContext(rc);
-            }
-        }
-        finally
-        {
-            Native.ReleaseDC(hwnd, hdc);
-            Native.DestroyWindow(hwnd);
-        }
-    }
-
-    private unsafe IntPtr CreateModernContext(IntPtr hdc)
-    {
-        int[][] versions =
-        {
-            new[] { 4, 6 },
-            new[] { 4, 5 },
-            new[] { 4, 4 },
-            new[] { 4, 3 },
-            new[] { 4, 2 },
-            new[] { 4, 1 },
-            new[] { 4, 0 },
-            new[] { 3, 3 },
-        };
-
-        foreach (var v in versions)
-        {
-            int[] attribs =
-            {
-                WGL.WGL_CONTEXT_MAJOR_VERSION_ARB, v[0],
-                WGL.WGL_CONTEXT_MINOR_VERSION_ARB, v[1],
-                WGL.WGL_CONTEXT_PROFILE_MASK_ARB, WGL.WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
-                WGL.WGL_CONTEXT_FLAGS_ARB, 0,
-                0
-            };
-
-            fixed (int* pAttribs = attribs)
-            {
-                IntPtr rc = WGL.wglCreateContextAttribsARB(hdc, IntPtr.Zero, (IntPtr)pAttribs);
-                if (rc != IntPtr.Zero)
-                    return rc;
-            }
-        }
-
-        return IntPtr.Zero;
-    }
-
-    private void SetBasicPixelFormat(IntPtr hdc)
-    {
-        var pfd = new Native.PIXELFORMATDESCRIPTOR
-        {
-            nSize = (ushort)Marshal.SizeOf<Native.PIXELFORMATDESCRIPTOR>(),
-            nVersion = 1,
-            dwFlags = Native.PFD_DRAW_TO_WINDOW | Native.PFD_SUPPORT_OPENGL | Native.PFD_DOUBLEBUFFER,
-            iPixelType = Native.PFD_TYPE_RGBA,
-            cColorBits = 32,
-            cDepthBits = 24,
-            cStencilBits = 8,
-            iLayerType = Native.PFD_MAIN_PLANE
-        };
-
-        int pf = Native.ChoosePixelFormat(hdc, ref pfd);
-        if (pf == 0)
-            throw new Win32Exception("ChoosePixelFormat failed.");
-
-        if (!Native.SetPixelFormat(hdc, pf, ref pfd))
-            throw new Win32Exception("SetPixelFormat failed.");
-    }
-
-    private void InitScene()
-    {
-        _mesh = ObjLoader.Load(Files.Model);
-        _catDiffuse = Texture.LoadTextureFromFile(Files.TextureDiffuse);
-        _catBump = Texture.LoadTextureFromFile(Files.TextureBump);
-
-        _program = CreateProgram();
-
-        _uModel = GL.GetUniformLocation(_program, "uModel");
-        _uView = GL.GetUniformLocation(_program, "uView");
-        _uProj = GL.GetUniformLocation(_program, "uProj");
-        _uDiffuse = GL.GetUniformLocation(_program, "uDiffuse");
-        _uNormalMap = GL.GetUniformLocation(_program, "uNormalMap");
-        _uLightDir = GL.GetUniformLocation(_program, "uLightDir");
-        _uViewPos = GL.GetUniformLocation(_program, "uViewPos");
-        _uInvertNormalY = GL.GetUniformLocation(_program, "uInvertNormalY");
-
-        CreateObject();
-
-        GL.Enable(GL.GL_DEPTH_TEST);
-        GL.Enable(GL.GL_CULL_FACE);
-        GL.CullFace(GL.GL_BACK);
-        GL.ClearColor(0.8f, 0.8f, 0.8f, 1.0f);
-
-        if (WGL.wglSwapIntervalEXT != null)
-            WGL.wglSwapIntervalEXT(1);
-    }
-
-    private void DestroyScene()
-    {
-        GL.DeleteTextures(1, ref _catDiffuse);
-        GL.DeleteTextures(1, ref _catBump);
-
-        if (_vbo != 0)
-        {
-            GL.DeleteBuffers(1, ref _vbo);
-            _vbo = 0;
-        }
-
-        if (_vao != 0)
-        {
-            GL.DeleteVertexArrays(1, ref _vao);
-            _vao = 0;
-        }
-
-        if (_program != 0)
-        {
-            GL.DeleteProgram(_program);
-            _program = 0;
-        }
-    }
-
-    private uint CreateProgram()
-    {
-        string vs = File.ReadAllText(Files.ShaderVertex);
-        string fs = File.ReadAllText(Files.ShaderFragment);
-
-        uint vert = CompileShader(GL.GL_VERTEX_SHADER, vs);
-        uint frag = CompileShader(GL.GL_FRAGMENT_SHADER, fs);
-
-        uint program = GL.CreateProgram();
-        GL.AttachShader(program, vert);
-        GL.AttachShader(program, frag);
-        GL.LinkProgram(program);
-
-        GL.DeleteShader(vert);
-        GL.DeleteShader(frag);
-
-        GL.GetProgramiv(program, GL.GL_LINK_STATUS, out int ok);
-        
-        if (ok == 0)
-            throw new Exception("Program link failed:\n" + GL.GetProgramInfoLog(program));
-
-        return program;
-    }
-
-    private uint CompileShader(uint type, string source)
-    {
-        uint shader = GL.CreateShader(type);
-        GL.ShaderSource(shader, source);
-        GL.CompileShader(shader);
-
-        GL.GetShaderiv(shader, GL.GL_COMPILE_STATUS, out int ok);
-        if (ok == 0)
-            throw new Exception("Shader compilation failed:\n" + GL.GetShaderInfoLog(shader));
-
-        return shader;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Vertex
-    {
-        public float px, py, pz;
-        public float u, v;
-        public float nx, ny, nz;
-        public float tx, ty, tz;
-
-        public Vertex(
-            float px, float py, float pz,
-            float u, float v,
-            float nx, float ny, float nz,
-            float tx, float ty, float tz)
-        {
-            this.px = px; this.py = py; this.pz = pz;
-            this.u = u; this.v = v;
-            this.nx = nx; this.ny = ny; this.nz = nz;
-            this.tx = tx; this.ty = ty; this.tz = tz;
-        }
-    }
-
-    private unsafe void CreateObject()
-    {
-        Vertex[] vertices = _mesh.Vertices
-            .Select(vx => new Vertex(
-                vx.Position.X, vx.Position.Y, vx.Position.Z, 
-                vx.TexCoord.X, vx.TexCoord.Y, 
-                vx.Normal.X, vx.Normal.Y, vx.Normal.Z,
-                vx.Tangent.X, vx.Tangent.Y, vx.Tangent.Z))
-            .ToArray();
-
-        GL.GenVertexArrays(1, out _vao);
-        GL.BindVertexArray(_vao);
-
-        GL.GenBuffers(1, out _vbo);
-        GL.BindBuffer(GL.GL_ARRAY_BUFFER, _vbo);
-
-        fixed (Vertex* p = vertices)
-        {
-            GL.BufferData(GL.GL_ARRAY_BUFFER, (nint)(vertices.Length * sizeof(Vertex)), (IntPtr)p, GL.GL_STATIC_DRAW);
-        }
-
-        int stride = sizeof(Vertex);
-
-        GL.VertexAttribPointer(0, 3, GL.GL_FLOAT, false, stride, Marshal.OffsetOf<Vertex>(nameof(Vertex.px)));
-        GL.EnableVertexAttribArray(0);
-
-        GL.VertexAttribPointer(1, 2, GL.GL_FLOAT, false, stride, Marshal.OffsetOf<Vertex>(nameof(Vertex.u)));
-        GL.EnableVertexAttribArray(1);
-
-        GL.VertexAttribPointer(2, 3, GL.GL_FLOAT, false, stride, Marshal.OffsetOf<Vertex>(nameof(Vertex.nx)));
-        GL.EnableVertexAttribArray(2);
-
-        GL.VertexAttribPointer(3, 3, GL.GL_FLOAT, false, stride, Marshal.OffsetOf<Vertex>(nameof(Vertex.tx)));
-        GL.EnableVertexAttribArray(3);
-
-        GL.BindVertexArray(0);
-        GL.BindBuffer(GL.GL_ARRAY_BUFFER, 0);
-    }
-
-    private unsafe void RenderFrame()
-    {
-        if (!_glInitialized || IsDisposed || ClientSize.Width <= 0 || ClientSize.Height <= 0)
-            return;
-
-        long now = Stopwatch.GetTimestamp();
-        float dt = (float)(now - _lastTicks) / Stopwatch.Frequency;
-        _lastTicks = now;
-
-        _autoRotY += dt * 0.8f;
-
-        GL.Viewport(0, 0, ClientSize.Width, ClientSize.Height);
-        GL.Clear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT);
-
-        float aspect = (float)ClientSize.Width / ClientSize.Height;
-
-        Mat4 proj = Mat4.Perspective(60.0f * MathF.PI / 180.0f, aspect, 0.1f, 100.0f);
-        Mat4 view = Mat4.Translation(0.0f, 0.0f, -_zoom);
-        Mat4 rotY = Mat4.RotationY(_rotY + _autoRotY);
-        Mat4 rotX = Mat4.RotationX(_rotX);
-        Mat4 translation = Mat4.Translation(0, -20, 0.0f);
-        Mat4 rotation = Mat4.Multiply(rotY, rotX);
-        Mat4 model = Mat4.Multiply(translation, rotation);
-
-        GL.UseProgram(_program);
-
-        fixed (float* pModel = model.M)
-            GL.UniformMatrix4fv(_uModel, 1, false, (IntPtr)pModel);
-
-        fixed (float* pView = view.M)
-            GL.UniformMatrix4fv(_uView, 1, false, (IntPtr)pView);
-
-        fixed (float* pProj = proj.M)
-            GL.UniformMatrix4fv(_uProj, 1, false, (IntPtr)pProj);
-
-        if (dir)
-        {
-            xxx += 0.01f;
-        }
-        else
-        {
-            xxx -= 0.01f;
-        }
-
-        if (dir && xxx > 2)
-        {
-            dir = false;
-        }
-        else if (!dir && xxx < -2)
-        {
-            dir = true;
-        }
-
-        GL.Uniform3f(_uLightDir, xxx, -0.0f, -2.0f);
-        GL.Uniform3f(_uViewPos, 0.0f, 0.0f, _zoom);
-        GL.Uniform1i(_uInvertNormalY, InvertNormalMapGreenChannel ? 1 : 0);
-
-        GL.ActiveTexture(GL.GL_TEXTURE0);
-        GL.BindTexture(GL.GL_TEXTURE_2D, _catDiffuse);
-        GL.Uniform1i(_uDiffuse, 0);
-
-        GL.ActiveTexture(GL.GL_TEXTURE1);
-        GL.BindTexture(GL.GL_TEXTURE_2D, _catBump);
-        GL.Uniform1i(_uNormalMap, 1);
-
-        GL.BindVertexArray(_vao);
-        GL.DrawArrays(GL.GL_TRIANGLES, 0, _mesh.Vertices.Length);
-        GL.BindVertexArray(0);
-
-        Native.SwapBuffers(_hdc);
-    }
-
-    private static bool dir;
-    private static float xxx = -2;
 }

@@ -6,29 +6,17 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- OpenGL is called through unmanaged function pointers. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <BaseOutputPath></BaseOutputPath>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Update="objects\12221_Cat_v1_l3.mtl">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="objects\12221_Cat_v1_l3.obj">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="objects\Cat_bump.jpg">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="objects\Cat_diffuse.jpg">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="shaders\cat.frag">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="shaders\cat.vert">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    <!-- The shaders are built into the executable and read with GetManifestResourceStream("cat.vert"). -->
+    <None Remove="shaders\**" />
+    <EmbeddedResource Include="shaders\**" LogicalName="%(Filename)%(Extension)" />
+    <!-- The model and its textures are copied next to it. -->
+    <None Update="objects\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
